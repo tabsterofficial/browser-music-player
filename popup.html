@@ -1,16 +1,82 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Music Player</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music Player</title>
+    <!-- Using Tailwind CSS for utility classes -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Using Phosphor Icons for clean, modern icons -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <!-- Link to your custom stylesheet -->
+    <link rel="stylesheet" href="style.css">
 </head>
-<body>
-  <h1>Local Music Player</h1>
-  <label for="fileInput">Choose audio files:</label>
-  <input type="file" id="fileInput" multiple accept="audio/*" title="Select audio files to add to the playlist" />
-  <ul id="playlist"></ul>
-  <audio id="audioPlayer" controls></audio>
-  <script src="popup.js"></script>
+<body class="bg-gray-800 text-gray-200 p-4 flex flex-col h-full">
+
+    <!-- Hidden audio player element -->
+    <audio id="audioPlayer"></audio>
+    <!-- Hidden file input, triggered by a button -->
+    <input type="file" id="fileInput" multiple accept="audio/*" class="hidden" />
+
+    <!-- Main Player UI -->
+    <div class="flex-grow flex flex-col bg-gray-900 rounded-lg shadow-lg p-6">
+        
+        <!-- Album Art and Track Info -->
+        <div class="flex-shrink-0 text-center mb-6">
+            <div id="albumArt" class="w-40 h-40 mx-auto bg-gray-700 rounded-lg flex items-center justify-center mb-4 shadow-md">
+                <i class="ph ph-music-notes-simple text-6xl text-gray-500"></i>
+            </div>
+            <h2 id="trackTitle" class="text-xl font-bold truncate">No song selected</h2>
+            <p id="trackArtist" class="text-sm text-gray-400">---</p>
+        </div>
+
+        <!-- Playlist -->
+        <div class="flex-grow min-h-0 mb-4">
+            <ul id="playlist" class="h-full overflow-y-auto pr-2">
+                <!-- Playlist items will be injected here by JavaScript -->
+                 <li class="text-center text-gray-500 p-4">Add songs to get started!</li>
+            </ul>
+        </div>
+
+        <!-- Progress Bar and Timers -->
+        <div class="flex-shrink-0">
+            <div class="w-full">
+                <input type="range" id="seekBar" value="0" class="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+            </div>
+            <div class="flex justify-between text-xs text-gray-400 mt-1">
+                <span id="currentTime">0:00</span>
+                <span id="totalDuration">0:00</span>
+            </div>
+        </div>
+
+        <!-- Playback Controls -->
+        <div class="flex-shrink-0 flex items-center justify-center space-x-6 mt-4">
+            <button id="prevBtn" class="p-2 rounded-full hover:bg-gray-700 transition-colors">
+                <i class="ph-fill ph-skip-back text-2xl"></i>
+            </button>
+            <button id="playPauseBtn" class="p-4 rounded-full bg-emerald-500 hover:bg-emerald-600 text-gray-900 transition-colors shadow-lg">
+                <i id="playPauseIcon" class="ph-fill ph-play text-3xl"></i>
+            </button>
+            <button id="nextBtn" class="p-2 rounded-full hover:bg-gray-700 transition-colors">
+                <i class="ph-fill ph-skip-forward text-2xl"></i>
+            </button>
+        </div>
+
+    </div>
+
+    <!-- Bottom Bar for File Input and Volume -->
+    <div class="flex-shrink-0 flex items-center justify-between mt-4 p-2 bg-gray-900/50 rounded-lg">
+        <button id="addFilesBtn" class="flex items-center space-x-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg transition-colors">
+            <i class="ph ph-plus"></i>
+            <span>Add Songs</span>
+        </button>
+        <div class="flex items-center space-x-2 w-1/3">
+            <i class="ph ph-speaker-simple-high"></i>
+            <input type="range" id="volumeBar" min="0" max="1" step="0.01" value="1" class="w-full">
+        </div>
+    </div>
+
+    <!-- Link to your external JavaScript file -->
+    <script src="popup.js"></script>
 </body>
 </html>
