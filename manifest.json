@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Local Music Player",
+  "version": "1.0",
+  "description": "Play your local music files in the browser.",
+  "permissions": ["storage"],
+  "action": {
+    "default_popup": "popup.html"
+  }
+}
