@@ -1,17 +1,15 @@
 // --- State Management ---
-// These variables hold the player's state.
 let playlist = [];
 let currentTrackIndex = 0;
 let isPlaying = false;
 let currentTime = 0;
+let duration = 0;
 let volume = 1;
 
 // --- Offscreen Document Management ---
-// The offscreen document is a hidden page that allows us to play audio from a service worker.
-let creating; // A promise that resolves when the offscreen document is created
+let creating;
 
 async function setupOffscreenDocument(path) {
-    // Check if we have an existing offscreen document
     const offscreenUrl = chrome.runtime.getURL(path);
     const existingContexts = await chrome.runtime.getContexts({
         contextTypes: ['OFFSCREEN_DOCUMENT'],
@@ -22,7 +20,6 @@ async function setupOffscreenDocument(path) {
         return;
     }
 
-    // Create the offscreen document if it doesn't exist.
     if (creating) {
         await creating;
     } else {
@@ -36,99 +33,185 @@ async function setupOffscreenDocument(path) {
     }
 }
 
-// Function to send a message to the offscreen document to control the audio
 async function sendMessageToOffscreen(type, data) {
     await setupOffscreenDocument('offscreen.html');
-    await chrome.runtime.sendMessage({ type, data });
+    return chrome.runtime.sendMessage({ type, data });
 }
 
-
 // --- State Persistence ---
-// Load the player's state from chrome.storage when the extension starts
 chrome.runtime.onStartup.addListener(async () => {
+    console.log('Extension starting up...');
     await loadState();
 });
 
-// Initialize state when the extension is installed
 chrome.runtime.onInstalled.addListener(async () => {
+    console.log('Extension installed/updated...');
     await loadState();
 });
+
+// Initialize when service worker starts
+(async () => {
+    console.log('Service worker initialized...');
+    await loadState();
+})();
 
 async function loadState() {
-    const data = await chrome.storage.local.get(['playlist', 'currentTrackIndex', 'currentTime', 'volume']);
-    playlist = data.playlist || [];
-    currentTrackIndex = data.currentTrackIndex || 0;
-    currentTime = data.currentTime || 0;
-    volume = data.volume !== undefined ? data.volume : 1;
-    
-    // If a playlist exists, load the track but don't play it automatically
-    if (playlist.length > 0) {
-        const track = playlist[currentTrackIndex];
-        // We need to re-create blob URLs as they are not persistent
-        const file = await base64ToFile(track.data, track.name, track.type);
-        const url = URL.createObjectURL(file);
-        sendMessageToOffscreen('load', { url, currentTime, volume });
+    try {
+        const data = await chrome.storage.local.get([
+            'playlist', 
+            'currentTrackIndex', 
+            'currentTime', 
+            'volume',
+            'isPlaying'
+        ]);
+        
+        playlist = data.playlist || [];
+        currentTrackIndex = Math.max(0, Math.min(data.currentTrackIndex || 0, playlist.length - 1));
+        currentTime = data.currentTime || 0;
+        volume = data.volume !== undefined ? data.volume : 1;
+        isPlaying = false; // Always start paused
+        
+        console.log('State loaded:', { playlistLength: playlist.length, currentTrackIndex, currentTime, volume });
+        
+        // If a playlist exists, load the track but don't auto-play
+        if (playlist.length > 0 && currentTrackIndex < playlist.length) {
+            const track = playlist[currentTrackIndex];
+            const file = await base64ToFile(track.data, track.name, track.type);
+            const url = URL.createObjectURL(file);
+            await sendMessageToOffscreen('load', { url, currentTime, volume });
+        }
+    } catch (error) {
+        console.error('Error loading state:', error);
     }
 }
 
 async function saveState() {
-    await chrome.storage.local.set({
-        playlist,
-        currentTrackIndex,
-        currentTime,
-        volume
+    try {
+        await chrome.storage.local.set({
+            playlist,
+            currentTrackIndex,
+            currentTime,
+            volume,
+            isPlaying
+        });
+        
+        // Broadcast state update to all popup instances
+        broadcastStateUpdate();
+    } catch (error) {
+        console.error('Error saving state:', error);
+    }
+}
+
+function broadcastStateUpdate() {
+    // Send state update to popup if it's open
+    chrome.runtime.sendMessage({
+        type: 'state-update',
+        data: {
+            playlist,
+            currentTrackIndex,
+            isPlaying,
+            currentTime,
+            duration,
+            volume
+        }
+    }).catch(() => {
+        // Popup might not be open, ignore error
     });
 }
 
 // --- Message Handling ---
-// Listens for messages from the popup or the offscreen document
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    // Using a switch statement to handle different message types
-    switch (message.type) {
-        case 'get-state':
-            sendResponse({ playlist, currentTrackIndex, isPlaying, currentTime, volume });
-            break;
-        case 'add-files':
-            addFiles(message.data);
-            break;
-        case 'play':
-            playTrack(message.data);
-            break;
-        case 'pause':
-            pauseTrack();
-            break;
-        case 'next':
-            playNext();
-            break;
-        case 'previous':
-            playPrevious();
-            break;
-        case 'seek':
-            seek(message.data.time);
-            break;
-        case 'set-volume':
-            setVolume(message.data.volume);
-            break;
-        case 'time-update':
-            // Received from the offscreen document when the time changes
-            currentTime = message.data.currentTime;
-            saveState(); // Save progress periodically
-            break;
-        case 'ended':
-            // Received from the offscreen document when a track finishes
-            playNext();
-            break;
-    }
-    // Return true to indicate that sendResponse will be called asynchronously
-    return true;
+    console.log('Received message:', message.type);
+    
+    (async () => {
+        try {
+            switch (message.type) {
+                case 'get-state':
+                    sendResponse({ 
+                        playlist, 
+                        currentTrackIndex, 
+                        isPlaying, 
+                        currentTime, 
+                        duration,
+                        volume 
+                    });
+                    break;
+                    
+                case 'add-files':
+                    await addFiles(message.data);
+                    sendResponse({ success: true });
+                    break;
+                    
+                case 'play':
+                    await playTrack(message.data);
+                    sendResponse({ success: true });
+                    break;
+                    
+                case 'pause':
+                    await pauseTrack();
+                    sendResponse({ success: true });
+                    break;
+                    
+                case 'next':
+                    await playNext();
+                    sendResponse({ success: true });
+                    break;
+                    
+                case 'previous':
+                    await playPrevious();
+                    sendResponse({ success: true });
+                    break;
+                    
+                case 'seek':
+                    await seek(message.data.time);
+                    sendResponse({ success: true });
+                    break;
+                    
+                case 'set-volume':
+                    await setVolume(message.data.volume);
+                    sendResponse({ success: true });
+                    break;
+                    
+                case 'time-update':
+                    currentTime = message.data.currentTime;
+                    if (message.data.duration) {
+                        duration = message.data.duration;
+                    }
+                    broadcastStateUpdate();
+                    // Save state less frequently to avoid performance issues
+                    if (Math.floor(currentTime) % 5 === 0) {
+                        await saveState();
+                    }
+                    sendResponse({ success: true });
+                    break;
+                    
+                case 'ended':
+                    await playNext();
+                    sendResponse({ success: true });
+                    break;
+                    
+                case 'loaded':
+                    duration = message.data.duration || 0;
+                    broadcastStateUpdate();
+                    sendResponse({ success: true });
+                    break;
+                    
+                default:
+                    sendResponse({ error: 'Unknown message type' });
+            }
+        } catch (error) {
+            console.error('Error handling message:', error);
+            sendResponse({ error: error.message });
+        }
+    })();
+    
+    return true; // Keep message channel open for async response
 });
 
-
 // --- Playback Logic ---
-
 async function addFiles(files) {
     const wasPlaylistEmpty = playlist.length === 0;
-    // Convert files to a serializable format (base64) for storage
+    
     for (const file of files) {
         const base64 = await fileToBase64(file);
         playlist.push({
@@ -137,17 +220,27 @@ async function addFiles(files) {
             data: base64
         });
     }
+    
     await saveState();
+    
+    // If playlist was empty, load the first track but don't auto-play
     if (wasPlaylistEmpty && playlist.length > 0) {
-        await playTrack(0);
+        currentTrackIndex = 0;
+        const track = playlist[0];
+        const file = await base64ToFile(track.data, track.name, track.type);
+        const url = URL.createObjectURL(file);
+        await sendMessageToOffscreen('load', { url, currentTime: 0, volume });
     }
 }
 
 async function playTrack(index) {
-    if (index !== undefined) {
+    if (index !== undefined && index !== currentTrackIndex) {
         currentTrackIndex = index;
+        currentTime = 0; // Reset time when switching tracks
     }
+    
     if (playlist.length === 0 || currentTrackIndex < 0 || currentTrackIndex >= playlist.length) {
+        console.warn('Invalid track or empty playlist');
         return;
     }
     
@@ -156,43 +249,48 @@ async function playTrack(index) {
     const url = URL.createObjectURL(file);
 
     isPlaying = true;
-    sendMessageToOffscreen('play', { url, currentTime, volume });
+    await sendMessageToOffscreen('play', { url, currentTime, volume });
     await saveState();
+    
+    console.log('Playing track:', track.name);
 }
 
-function pauseTrack() {
+async function pauseTrack() {
     isPlaying = false;
-    sendMessageToOffscreen('pause');
-    saveState();
+    await sendMessageToOffscreen('pause');
+    await saveState();
+    console.log('Paused playback');
 }
 
 async function playNext() {
-    currentTime = 0; // Reset time for the next track
+    if (playlist.length === 0) return;
+    
+    currentTime = 0;
     currentTrackIndex = (currentTrackIndex + 1) % playlist.length;
     await playTrack();
 }
 
 async function playPrevious() {
-    currentTime = 0; // Reset time for the previous track
+    if (playlist.length === 0) return;
+    
+    currentTime = 0;
     currentTrackIndex = (currentTrackIndex - 1 + playlist.length) % playlist.length;
     await playTrack();
 }
 
-function seek(time) {
+async function seek(time) {
     currentTime = time;
-    sendMessageToOffscreen('seek', { time });
-    saveState();
+    await sendMessageToOffscreen('seek', { time });
+    await saveState();
 }
 
-function setVolume(newVolume) {
+async function setVolume(newVolume) {
     volume = newVolume;
-    sendMessageToOffscreen('set-volume', { volume });
-    saveState();
+    await sendMessageToOffscreen('set-volume', { volume });
+    await saveState();
 }
-
 
 // --- Utility Functions ---
-// These helpers convert files to and from a storable format.
 function fileToBase64(file) {
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -207,3 +305,15 @@ async function base64ToFile(base64, fileName, fileType) {
     const blob = await res.blob();
     return new File([blob], fileName, { type: fileType });
 }
+
+// Keep service worker alive
+chrome.runtime.onMessage.addListener(() => {
+    // This empty listener helps prevent the service worker from being terminated
+});
+
+// Periodic state save to prevent data loss
+setInterval(async () => {
+    if (isPlaying) {
+        await saveState();
+    }
+}, 30000); // Save every 30 seconds when playing
