@@ -2,6 +2,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- DOM Element References ---
     const fileInput = document.getElementById('fileInput');
     const addFilesBtn = document.getElementById('addFilesBtn');
+    const addFilesContent = document.getElementById('addFilesContent');
+    const addFilesSpinner = document.getElementById('addFilesSpinner');
+    const errorModal = document.getElementById('errorModal');
+    const errorMessage = document.getElementById('errorMessage');
+    const closeModalBtn = document.getElementById('closeModalBtn');
     const playlistEl = document.getElementById('playlist');
     const trackTitleEl = document.getElementById('trackTitle');
     const playPauseBtn = document.getElementById('playPauseBtn');
@@ -12,21 +17,22 @@ document.addEventListener('DOMContentLoaded', () => {
     const currentTimeEl = document.getElementById('currentTime');
     const totalDurationEl = document.getElementById('totalDuration');
     const volumeBar = document.getElementById('volumeBar');
+    const shuffleBtn = document.getElementById('shuffleBtn');
+    const repeatBtn = document.getElementById('repeatBtn');
+    const repeatOneIndicator = document.getElementById('repeatOneIndicator');
+    const searchInput = document.getElementById('searchInput'); // New search input
 
-    let isUpdatingSeekBar = false;
-    let currentState = null;
+    // --- State Variable ---
+    let playerState = {}; // Local cache of the player state
 
     // --- Functions to send messages to the background script ---
-    async function sendMessage(type, data) {
-        return new Promise((resolve) => {
-            chrome.runtime.sendMessage({ type, data }, (response) => {
-                if (chrome.runtime.lastError) {
-                    console.error('Message error:', chrome.runtime.lastError.message);
-                    resolve({ error: chrome.runtime.lastError.message });
-                } else {
-                    resolve(response || {});
-                }
-            });
+    function sendMessage(type, data, callback) {
+        chrome.runtime.sendMessage({ target: 'background', type, data }, (response) => {
+            if (chrome.runtime.lastError) {
+                console.error("Message error:", chrome.runtime.lastError.message);
+            } else if (callback) {
+                callback(response);
+            }
         });
     }
 
@@ -36,200 +42,150 @@ document.addEventListener('DOMContentLoaded', () => {
     playPauseBtn.addEventListener('click', togglePlayPause);
     nextBtn.addEventListener('click', () => sendMessage('next'));
     prevBtn.addEventListener('click', () => sendMessage('previous'));
-    
-    // Seek bar handling
-    seekBar.addEventListener('mousedown', () => {
-        isUpdatingSeekBar = true;
-    });
-    
-    seekBar.addEventListener('mouseup', () => {
-        isUpdatingSeekBar = false;
-        handleSeek();
-    });
-    
-    seekBar.addEventListener('input', (e) => {
-        if (isUpdatingSeekBar) {
-            // Show preview of time while dragging
-            const time = parseFloat(e.target.value);
-            currentTimeEl.textContent = formatTime(time);
-        }
-    });
-    
+    seekBar.addEventListener('input', handleSeek);
     volumeBar.addEventListener('input', handleVolumeChange);
+    shuffleBtn.addEventListener('click', () => sendMessage('toggle-shuffle'));
+    repeatBtn.addEventListener('click', () => sendMessage('cycle-repeat'));
+    closeModalBtn.addEventListener('click', () => errorModal.classList.add('hidden'));
+    searchInput.addEventListener('input', () => updateUI(playerState)); // Update UI on search
 
     // --- Initialization ---
-    initializePopup();
-
-    async function initializePopup() {
-        try {
-            const response = await sendMessage('get-state');
-            if (response && !response.error) {
-                currentState = response;
-                updateUI(response);
-            } else {
-                console.error('Failed to get initial state:', response?.error);
-                showEmptyState();
-            }
-        } catch (error) {
-            console.error('Error initializing popup:', error);
-            showEmptyState();
+    sendMessage('get-state', null, (response) => {
+        if (response) {
+            playerState = response;
+            updateUI(playerState);
         }
-    }
+    });
 
-    // Listen for state updates from the background script
     chrome.runtime.onMessage.addListener((message) => {
         if (message.type === 'state-update') {
-            currentState = message.data;
-            updateUI(message.data);
+            playerState = message.data;
+            updateUI(playerState);
         }
     });
 
     // --- UI Update Function ---
     function updateUI(state) {
-        updatePlaylist(state);
-        updateTrackInfo(state);
-        updatePlayPauseButton(state);
-        updateSeekBar(state);
-        updateVolume(state);
-    }
-
-    function updatePlaylist(state) {
-        playlistEl.innerHTML = '';
+        const currentPlaylist = state.isShuffled ? state.shuffledPlaylist : state.playlist;
+        const searchTerm = searchInput.value.toLowerCase();
         
-        if (!state.playlist || state.playlist.length === 0) {
+        // **FIX**: Get the actual currently playing track object
+        const currentTrack = currentPlaylist && currentPlaylist[state.currentTrackIndex];
+
+        playlistEl.innerHTML = '';
+        if (!currentPlaylist || currentPlaylist.length === 0) {
             playlistEl.innerHTML = '<li class="text-center text-gray-500 p-4">Add songs to get started!</li>';
-            return;
+        } else {
+            let foundSongs = false;
+            currentPlaylist.forEach((file, index) => {
+                if (file.name.toLowerCase().includes(searchTerm)) {
+                    foundSongs = true;
+                    const li = document.createElement('li');
+                    li.textContent = file.name;
+                    li.title = file.name;
+                    li.className = 'p-3 cursor-pointer rounded-md hover:bg-gray-700 transition-colors truncate';
+                    
+                    li.dataset.originalIndex = index;
+
+                    // **FIX**: Compare the file object with the current track object
+                    if (currentTrack && file.name === currentTrack.name) {
+                        li.classList.add('playing');
+                    }
+                    li.addEventListener('click', () => {
+                        sendMessage('play', parseInt(li.dataset.originalIndex, 10));
+                    });
+                    playlistEl.appendChild(li);
+                }
+            });
+
+            if (!foundSongs) {
+                 playlistEl.innerHTML = '<li class="text-center text-gray-500 p-4">No songs match your search.</li>';
+            }
         }
 
-        state.playlist.forEach((file, index) => {
-            const li = document.createElement('li');
-            li.textContent = file.name;
-            li.title = file.name;
-            li.className = 'p-3 cursor-pointer rounded-md hover:bg-gray-700 transition-colors truncate';
-            
-            if (index === state.currentTrackIndex) {
-                li.classList.add('playing');
-                if (state.isPlaying) {
-                    li.innerHTML = `<i class="ph ph-speaker-simple-high mr-2"></i>${file.name}`;
-                }
-            }
-            
-            li.addEventListener('click', () => sendMessage('play', index));
-            playlistEl.appendChild(li);
-        });
-    }
-
-    function updateTrackInfo(state) {
-        if (state.playlist && state.playlist.length > 0 && state.currentTrackIndex < state.playlist.length) {
-            const currentTrack = state.playlist[state.currentTrackIndex];
+        if (currentTrack) {
             trackTitleEl.textContent = currentTrack.name.replace(/\.[^/.]+$/, "");
         } else {
             trackTitleEl.textContent = "No song selected";
         }
-    }
 
-    function updatePlayPauseButton(state) {
-        playPauseIcon.classList.remove('ph-play', 'ph-pause');
-        
-        if (state.isPlaying) {
-            playPauseIcon.classList.add('ph-pause');
-            playPauseBtn.title = 'Pause';
-        } else {
-            playPauseIcon.classList.add('ph-play');
-            playPauseBtn.title = 'Play';
-        }
-    }
+        playPauseIcon.classList.toggle('ph-play', !state.isPlaying);
+        playPauseIcon.classList.toggle('ph-pause', state.isPlaying);
 
-    function updateSeekBar(state) {
-        if (!isUpdatingSeekBar) {
-            const currentTime = state.currentTime || 0;
-            const duration = state.duration || 0;
-            
-            seekBar.max = duration > 0 ? duration : 100;
-            seekBar.value = currentTime;
-            
-            currentTimeEl.textContent = formatTime(currentTime);
-            totalDurationEl.textContent = duration > 0 ? formatTime(duration) : "---";
-        }
-    }
+        seekBar.max = state.duration || 0;
+        seekBar.value = state.currentTime || 0;
+        currentTimeEl.textContent = formatTime(state.currentTime);
+        totalDurationEl.textContent = formatTime(state.duration);
 
-    function updateVolume(state) {
-        if (volumeBar.value != state.volume) {
-            volumeBar.value = state.volume;
-        }
-    }
+        volumeBar.value = state.volume;
 
-    function showEmptyState() {
-        playlistEl.innerHTML = '<li class="text-center text-gray-500 p-4">Add songs to get started!</li>';
-        trackTitleEl.textContent = "No song selected";
-        playPauseIcon.classList.remove('ph-pause');
-        playPauseIcon.classList.add('ph-play');
-        currentTimeEl.textContent = "0:00";
-        totalDurationEl.textContent = "---";
+        shuffleBtn.classList.toggle('active-control', state.isShuffled);
+        repeatBtn.classList.toggle('active-control', state.repeatMode !== 'none');
+        repeatOneIndicator.classList.toggle('hidden', state.repeatMode !== 'one');
     }
 
     // --- Event Handlers ---
     async function handleFileSelect() {
-        const files = Array.from(fileInput.files);
-        if (files.length === 0) return;
-
-        // Show loading state
-        addFilesBtn.textContent = 'Adding...';
         addFilesBtn.disabled = true;
+        addFilesContent.classList.add('hidden');
+        addFilesSpinner.classList.remove('hidden');
 
         try {
-            const response = await sendMessage('add-files', files);
-            if (response.error) {
-                console.error('Error adding files:', response.error);
-                alert('Error adding files. Please try again.');
-            }
+            const files = Array.from(fileInput.files);
+            if (files.length === 0) return;
+
+            const filesData = await Promise.all(files.map(async (file) => {
+                const base64 = await fileToBase64(file);
+                return { name: file.name, type: file.type, data: base64 };
+            }));
+            
+            sendMessage('add-files', filesData);
+
         } catch (error) {
-            console.error('Error adding files:', error);
-            alert('Error adding files. Please try again.');
+            console.error("Error adding files:", error);
+            errorMessage.textContent = "Error adding files. Please try again.";
+            errorModal.classList.remove('hidden');
         } finally {
-            // Reset button state
-            addFilesBtn.innerHTML = '<i class="ph ph-plus"></i><span>Add Songs</span>';
             addFilesBtn.disabled = false;
-            fileInput.value = ''; // Clear file input
+            addFilesContent.classList.remove('hidden');
+            addFilesSpinner.classList.add('hidden');
+            fileInput.value = '';
         }
     }
 
-    async function togglePlayPause() {
-        if (!currentState || !currentState.playlist || currentState.playlist.length === 0) {
-            return;
-        }
-
-        const isCurrentlyPlaying = playPauseIcon.classList.contains('ph-pause');
-        
-        if (isCurrentlyPlaying) {
-            await sendMessage('pause');
+    function togglePlayPause() {
+        if (playPauseIcon.classList.contains('ph-play')) {
+            sendMessage('play');
         } else {
-            await sendMessage('play');
+            sendMessage('pause');
         }
     }
 
     function handleSeek() {
-        const time = parseFloat(seekBar.value);
-        sendMessage('seek', { time });
+        sendMessage('seek', { time: parseFloat(seekBar.value) });
     }
 
     function handleVolumeChange() {
-        const volume = parseFloat(volumeBar.value);
-        sendMessage('set-volume', { volume });
+        sendMessage('set-volume', { volume: parseFloat(volumeBar.value) });
     }
 
-    // --- Utility Function ---
+    // --- Utility Functions ---
     function formatTime(seconds) {
-        if (isNaN(seconds) || seconds < 0) return "0:00";
-        
+        if (isNaN(seconds) || seconds === 0) return "0:00";
         const minutes = Math.floor(seconds / 60);
         const secs = Math.floor(seconds % 60);
         return `${minutes}:${secs < 10 ? '0' : ''}${secs}`;
     }
 
-    // Handle popup close
-    window.addEventListener('beforeunload', () => {
-        // Music continues playing in background
-        console.log('Popup closing, music continues in background');
-    });
+    function fileToBase64(file) {
+        return new Promise((resolve, reject) => {
+            if (!(file instanceof Blob)) {
+                return reject(new TypeError("Failed to read file: The provided object is not a Blob."));
+            }
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = error => reject(error);
+        });
+    }
 });

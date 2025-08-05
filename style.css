@@ -3,7 +3,6 @@ body {
     font-family: 'Inter', sans-serif;
     width: 400px; /* Standard extension popup width */
     height: 550px; /* Standard extension popup height */
-    /* The background color is now handled by Tailwind's body class, but this can be a fallback */
 }
 
 /* Custom scrollbar for the playlist */
@@ -27,6 +26,12 @@ body {
     color: #10b981; /* Corresponds to emerald-500 */
     font-weight: 600;
 }
+
+/* NEW: Style for active control buttons (Shuffle/Repeat) */
+.active-control {
+    color: #10b981; /* Corresponds to emerald-500 */
+}
+
 
 /* Custom styles for range inputs (seek and volume) */
 input[type=range] {
