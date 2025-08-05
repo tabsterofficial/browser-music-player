@@ -1,13 +1,19 @@
 // --- State Management ---
-let playlist = [];
-let currentTrackIndex = 0;
-let isPlaying = false;
-let currentTime = 0;
-let duration = 0;
-let volume = 1;
+// A single object to hold the player's state for easier management.
+let playerState = {
+    playlist: [],
+    shuffledPlaylist: [],
+    currentTrackIndex: 0,
+    isPlaying: false,
+    currentTime: 0,
+    duration: 0,
+    volume: 1,
+    isShuffled: false,
+    repeatMode: 'none', // 'none', 'all', 'one'
+};
 
 // --- Offscreen Document Management ---
-let creating;
+let creating; // A promise that resolves when the offscreen document is created
 
 async function setupOffscreenDocument(path) {
     const offscreenUrl = chrome.runtime.getURL(path);
@@ -35,285 +41,237 @@ async function setupOffscreenDocument(path) {
 
 async function sendMessageToOffscreen(type, data) {
     await setupOffscreenDocument('offscreen.html');
-    return chrome.runtime.sendMessage({ type, data });
+    // This message is specifically for the offscreen document
+    chrome.runtime.sendMessage({ target: 'offscreen', command: type, data });
 }
 
-// --- State Persistence ---
-chrome.runtime.onStartup.addListener(async () => {
-    console.log('Extension starting up...');
-    await loadState();
-});
 
-chrome.runtime.onInstalled.addListener(async () => {
-    console.log('Extension installed/updated...');
-    await loadState();
-});
-
-// Initialize when service worker starts
-(async () => {
-    console.log('Service worker initialized...');
-    await loadState();
-})();
+// --- State Persistence & Synchronization ---
+chrome.runtime.onStartup.addListener(loadState);
+chrome.runtime.onInstalled.addListener(loadState);
 
 async function loadState() {
-    try {
-        const data = await chrome.storage.local.get([
-            'playlist', 
-            'currentTrackIndex', 
-            'currentTime', 
-            'volume',
-            'isPlaying'
-        ]);
-        
-        playlist = data.playlist || [];
-        currentTrackIndex = Math.max(0, Math.min(data.currentTrackIndex || 0, playlist.length - 1));
-        currentTime = data.currentTime || 0;
-        volume = data.volume !== undefined ? data.volume : 1;
-        isPlaying = false; // Always start paused
-        
-        console.log('State loaded:', { playlistLength: playlist.length, currentTrackIndex, currentTime, volume });
-        
-        // If a playlist exists, load the track but don't auto-play
-        if (playlist.length > 0 && currentTrackIndex < playlist.length) {
-            const track = playlist[currentTrackIndex];
-            const file = await base64ToFile(track.data, track.name, track.type);
-            const url = URL.createObjectURL(file);
-            await sendMessageToOffscreen('load', { url, currentTime, volume });
-        }
-    } catch (error) {
-        console.error('Error loading state:', error);
+    console.log('Attempting to load state...');
+    const data = await chrome.storage.local.get(['playerState']);
+    if (data.playerState) {
+        // Merge saved state with defaults to ensure all keys are present
+        playerState = { ...playerState, ...data.playerState, isPlaying: false };
+    }
+    
+    // If shuffle is on, regenerate the shuffled playlist based on the loaded order
+    if (playerState.isShuffled) {
+        generateShuffledPlaylist();
+    }
+    
+    console.log('State loaded:', playerState);
+    
+    // If a playlist exists, load the track into the offscreen player but don't play it.
+    const currentTrack = getCurrentTrack();
+    if (currentTrack) {
+        const file = await base64ToFile(currentTrack.data, currentTrack.name, currentTrack.type);
+        const url = URL.createObjectURL(file);
+        sendMessageToOffscreen('load', { url, currentTime: playerState.currentTime, volume: playerState.volume });
     }
 }
 
-async function saveState() {
-    try {
-        await chrome.storage.local.set({
-            playlist,
-            currentTrackIndex,
-            currentTime,
-            volume,
-            isPlaying
-        });
-        
-        // Broadcast state update to all popup instances
-        broadcastStateUpdate();
-    } catch (error) {
-        console.error('Error saving state:', error);
+let saveStateTimeout;
+function saveState(immediate = false) {
+    clearTimeout(saveStateTimeout);
+    if (immediate) {
+        performSave();
+    } else {
+        // Debounce state saves to prevent writing to storage too frequently.
+        saveStateTimeout = setTimeout(performSave, 500);
     }
 }
 
-function broadcastStateUpdate() {
-    // Send state update to popup if it's open
-    chrome.runtime.sendMessage({
-        type: 'state-update',
-        data: {
-            playlist,
-            currentTrackIndex,
-            isPlaying,
-            currentTime,
-            duration,
-            volume
-        }
-    }).catch(() => {
-        // Popup might not be open, ignore error
-    });
+async function performSave() {
+    console.log('Saving state:', playerState);
+    await chrome.storage.local.set({ playerState });
+}
+
+function broadcastState() {
+    chrome.runtime.sendMessage({ type: 'state-update', data: playerState });
 }
 
 // --- Message Handling ---
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    console.log('Received message:', message.type);
-    
+    // **FIX**: This listener now accepts messages from the popup (which have no target)
+    // and messages specifically targeted at the background script. It ignores messages
+    // meant for the offscreen document.
+    if (message.target === 'offscreen') {
+        return;
+    }
+
+    // Wrap in an async IIFE to handle promises correctly
     (async () => {
         try {
             switch (message.type) {
-                case 'get-state':
-                    sendResponse({ 
-                        playlist, 
-                        currentTrackIndex, 
-                        isPlaying, 
-                        currentTime, 
-                        duration,
-                        volume 
-                    });
-                    break;
-                    
-                case 'add-files':
-                    await addFiles(message.data);
-                    sendResponse({ success: true });
-                    break;
-                    
-                case 'play':
-                    await playTrack(message.data);
-                    sendResponse({ success: true });
-                    break;
-                    
-                case 'pause':
-                    await pauseTrack();
-                    sendResponse({ success: true });
-                    break;
-                    
-                case 'next':
-                    await playNext();
-                    sendResponse({ success: true });
-                    break;
-                    
-                case 'previous':
-                    await playPrevious();
-                    sendResponse({ success: true });
-                    break;
-                    
-                case 'seek':
-                    await seek(message.data.time);
-                    sendResponse({ success: true });
-                    break;
-                    
-                case 'set-volume':
-                    await setVolume(message.data.volume);
-                    sendResponse({ success: true });
-                    break;
-                    
+                case 'get-state': sendResponse(playerState); break;
+                case 'add-files': await addFiles(message.data); break;
+                case 'play': await playTrack(message.data); break;
+                case 'pause': await pauseTrack(); break;
+                case 'next': await playNext(); break;
+                case 'previous': await playPrevious(); break;
+                case 'seek': await seek(message.data.time); break;
+                case 'set-volume': await setVolume(message.data.volume); break;
+                case 'toggle-shuffle': await toggleShuffle(); break;
+                case 'cycle-repeat': await cycleRepeatMode(); break;
                 case 'time-update':
-                    currentTime = message.data.currentTime;
-                    if (message.data.duration) {
-                        duration = message.data.duration;
-                    }
-                    broadcastStateUpdate();
-                    // Save state less frequently to avoid performance issues
-                    if (Math.floor(currentTime) % 5 === 0) {
-                        await saveState();
-                    }
-                    sendResponse({ success: true });
+                    playerState.currentTime = message.data.currentTime;
+                    playerState.duration = message.data.duration;
+                    broadcastState();
+                    saveState(); // Debounced save
                     break;
-                    
-                case 'ended':
-                    await playNext();
-                    sendResponse({ success: true });
-                    break;
-                    
-                case 'loaded':
-                    duration = message.data.duration || 0;
-                    broadcastStateUpdate();
-                    sendResponse({ success: true });
-                    break;
-                    
-                default:
-                    sendResponse({ error: 'Unknown message type' });
+                case 'ended': await handleTrackEnd(); break;
             }
         } catch (error) {
-            console.error('Error handling message:', error);
-            sendResponse({ error: error.message });
+            console.error(`Error handling message type ${message.type}:`, error);
         }
     })();
     
-    return true; // Keep message channel open for async response
+    return true; // Indicates an asynchronous response
 });
 
+
 // --- Playback Logic ---
+
 async function addFiles(files) {
-    const wasPlaylistEmpty = playlist.length === 0;
+    const wasPlaylistEmpty = playerState.playlist.length === 0;
+    playerState.playlist.push(...files);
     
-    for (const file of files) {
-        const base64 = await fileToBase64(file);
-        playlist.push({
-            name: file.name,
-            type: file.type,
-            data: base64
-        });
+    if (playerState.isShuffled) {
+        playerState.shuffledPlaylist.push(...files);
     }
-    
-    await saveState();
-    
-    // If playlist was empty, load the first track but don't auto-play
-    if (wasPlaylistEmpty && playlist.length > 0) {
-        currentTrackIndex = 0;
-        const track = playlist[0];
-        const file = await base64ToFile(track.data, track.name, track.type);
-        const url = URL.createObjectURL(file);
-        await sendMessageToOffscreen('load', { url, currentTime: 0, volume });
+
+    await saveState(true);
+    if (wasPlaylistEmpty && playerState.playlist.length > 0) {
+        await playTrack(0);
     }
+    broadcastState();
 }
 
 async function playTrack(index) {
-    if (index !== undefined && index !== currentTrackIndex) {
-        currentTrackIndex = index;
-        currentTime = 0; // Reset time when switching tracks
+    if (index !== undefined) {
+        playerState.currentTrackIndex = index;
     }
     
-    if (playlist.length === 0 || currentTrackIndex < 0 || currentTrackIndex >= playlist.length) {
-        console.warn('Invalid track or empty playlist');
-        return;
-    }
+    const currentTrack = getCurrentTrack();
+    if (!currentTrack) return;
     
-    const track = playlist[currentTrackIndex];
-    const file = await base64ToFile(track.data, track.name, track.type);
+    if (index !== undefined) {
+        playerState.currentTime = 0;
+    }
+
+    const file = await base64ToFile(currentTrack.data, currentTrack.name, currentTrack.type);
     const url = URL.createObjectURL(file);
 
-    isPlaying = true;
-    await sendMessageToOffscreen('play', { url, currentTime, volume });
-    await saveState();
-    
-    console.log('Playing track:', track.name);
+    playerState.isPlaying = true;
+    sendMessageToOffscreen('play', { url, currentTime: playerState.currentTime, volume: playerState.volume });
+    await saveState(true);
+    broadcastState();
 }
 
 async function pauseTrack() {
-    isPlaying = false;
-    await sendMessageToOffscreen('pause');
-    await saveState();
-    console.log('Paused playback');
+    playerState.isPlaying = false;
+    sendMessageToOffscreen('pause');
+    await saveState(true);
+    broadcastState();
 }
 
-async function playNext() {
-    if (playlist.length === 0) return;
-    
-    currentTime = 0;
-    currentTrackIndex = (currentTrackIndex + 1) % playlist.length;
+async function handleTrackEnd() {
+    if (playerState.repeatMode === 'one') {
+        playTrack(playerState.currentTrackIndex);
+    } else {
+        playNext(true);
+    }
+}
+
+async function playNext(fromEnded = false) {
+    const currentPlaylist = playerState.isShuffled ? playerState.shuffledPlaylist : playerState.playlist;
+    if (currentPlaylist.length === 0) return;
+
+    const isLastTrack = playerState.currentTrackIndex >= currentPlaylist.length - 1;
+
+    if (isLastTrack && playerState.repeatMode === 'all') {
+        playerState.currentTrackIndex = 0;
+    } else if (isLastTrack && fromEnded && playerState.repeatMode === 'none') {
+        playerState.isPlaying = false;
+        playerState.currentTime = 0;
+        await saveState(true);
+        broadcastState();
+        return;
+    } else {
+        playerState.currentTrackIndex = (playerState.currentTrackIndex + 1) % currentPlaylist.length;
+    }
     await playTrack();
 }
 
 async function playPrevious() {
-    if (playlist.length === 0) return;
-    
-    currentTime = 0;
-    currentTrackIndex = (currentTrackIndex - 1 + playlist.length) % playlist.length;
+    const currentPlaylist = playerState.isShuffled ? playerState.shuffledPlaylist : playerState.playlist;
+    if (currentPlaylist.length === 0) return;
+    playerState.currentTrackIndex = (playerState.currentTrackIndex - 1 + currentPlaylist.length) % currentPlaylist.length;
     await playTrack();
 }
 
-async function seek(time) {
-    currentTime = time;
-    await sendMessageToOffscreen('seek', { time });
-    await saveState();
+function seek(time) {
+    playerState.currentTime = time;
+    sendMessageToOffscreen('seek', { time });
+    saveState();
+    broadcastState();
 }
 
-async function setVolume(newVolume) {
-    volume = newVolume;
-    await sendMessageToOffscreen('set-volume', { volume });
-    await saveState();
+function setVolume(newVolume) {
+    playerState.volume = newVolume;
+    sendMessageToOffscreen('set-volume', { volume: newVolume });
+    saveState();
+    broadcastState();
+}
+
+// --- Shuffle & Repeat Logic ---
+function generateShuffledPlaylist() {
+    const currentTrack = getCurrentTrack();
+    playerState.shuffledPlaylist = [...playerState.playlist].sort(() => Math.random() - 0.5);
+    if (currentTrack) {
+        const newIndex = playerState.shuffledPlaylist.findIndex(track => track.name === currentTrack.name);
+        if (newIndex !== -1) {
+            // Move current track to the start of the shuffled playlist to avoid interruption
+            const [item] = playerState.shuffledPlaylist.splice(newIndex, 1);
+            playerState.shuffledPlaylist.unshift(item);
+            playerState.currentTrackIndex = 0;
+        }
+    }
+}
+
+async function toggleShuffle() {
+    playerState.isShuffled = !playerState.isShuffled;
+    
+    if (playerState.isShuffled) {
+        generateShuffledPlaylist();
+    } else {
+        const currentShuffledTrack = playerState.shuffledPlaylist[playerState.currentTrackIndex];
+        playerState.currentTrackIndex = playerState.playlist.findIndex(track => track.name === currentShuffledTrack.name);
+    }
+    await saveState(true);
+    broadcastState();
+}
+
+async function cycleRepeatMode() {
+    const modes = ['none', 'all', 'one'];
+    const currentIndex = modes.indexOf(playerState.repeatMode);
+    playerState.repeatMode = modes[(currentIndex + 1) % modes.length];
+    await saveState(true);
+    broadcastState();
+}
+
+function getCurrentTrack() {
+    const activePlaylist = playerState.isShuffled ? playerState.shuffledPlaylist : playerState.playlist;
+    return activePlaylist[playerState.currentTrackIndex];
 }
 
 // --- Utility Functions ---
-function fileToBase64(file) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.readAsDataURL(file);
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = error => reject(error);
-    });
-}
-
 async function base64ToFile(base64, fileName, fileType) {
     const res = await fetch(base64);
     const blob = await res.blob();
     return new File([blob], fileName, { type: fileType });
 }
-
-// Keep service worker alive
-chrome.runtime.onMessage.addListener(() => {
-    // This empty listener helps prevent the service worker from being terminated
-});
-
-// Periodic state save to prevent data loss
-setInterval(async () => {
-    if (isPlaying) {
-        await saveState();
-    }
-}, 30000); // Save every 30 seconds when playing
