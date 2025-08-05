@@ -1,237 +1,125 @@
 // Wait for the DOM to be fully loaded before running the script
 document.addEventListener('DOMContentLoaded', () => {
     // --- DOM Element References ---
-    const audioPlayer = document.getElementById('audioPlayer');
     const fileInput = document.getElementById('fileInput');
     const addFilesBtn = document.getElementById('addFilesBtn');
-    
-    // UI Elements
     const playlistEl = document.getElementById('playlist');
     const trackTitleEl = document.getElementById('trackTitle');
-    const albumArtEl = document.getElementById('albumArt');
-    
-    // Control Buttons
     const playPauseBtn = document.getElementById('playPauseBtn');
     const playPauseIcon = document.getElementById('playPauseIcon');
     const prevBtn = document.getElementById('prevBtn');
     const nextBtn = document.getElementById('nextBtn');
-    
-    // Progress and Volume
     const seekBar = document.getElementById('seekBar');
-    const currentTimeEl = document.getElementById('currentTime');
-    const totalDurationEl = document.getElementById('totalDuration');
+    const currentTimeEl = document.getElementById('totalDuration'); // Swapped for clarity
+    const totalDurationEl = document.getElementById('currentTime'); // Swapped for clarity
     const volumeBar = document.getElementById('volumeBar');
 
-    // --- State Variables ---
-    let playlist = [];
-    let currentTrackIndex = 0;
-    let isPlaying = false;
+    // --- Functions to send messages to the background script ---
+    function sendMessage(type, data) {
+        chrome.runtime.sendMessage({ type, data });
+    }
 
     // --- Event Listeners ---
-
-    // Trigger hidden file input when "Add Songs" button is clicked
     addFilesBtn.addEventListener('click', () => fileInput.click());
-    
-    // Handle file selection
     fileInput.addEventListener('change', handleFileSelect);
-
-    // Playback controls
     playPauseBtn.addEventListener('click', togglePlayPause);
-    nextBtn.addEventListener('click', playNext);
-    prevBtn.addEventListener('click', playPrevious);
-
-    // Audio player events
-    audioPlayer.addEventListener('ended', playNext); // Autoplay next song
-    audioPlayer.addEventListener('timeupdate', updateProgress);
-    audioPlayer.addEventListener('loadedmetadata', updateDuration);
-
-    // Seek and volume bar controls
+    nextBtn.addEventListener('click', () => sendMessage('next'));
+    prevBtn.addEventListener('click', () => sendMessage('previous'));
     seekBar.addEventListener('input', handleSeek);
     volumeBar.addEventListener('input', handleVolumeChange);
 
-
-    // --- Core Functions ---
-
-    /**
-     * Handles the selection of audio files.
-     * Populates the playlist and starts playing the first track.
-     */
-    function handleFileSelect() {
-        // Convert FileList to array and add to existing playlist
-        const newFiles = Array.from(fileInput.files);
-        if (newFiles.length === 0) return;
-
-        const wasPlaylistEmpty = playlist.length === 0;
-        playlist.push(...newFiles);
-        
-        updatePlaylistUI();
-
-        // If the playlist was empty, start playing the first new song
-        if (wasPlaylistEmpty) {
-            loadTrack(0);
+    // --- Initialization ---
+    // Request the current state from the background script when the popup opens
+    chrome.runtime.sendMessage({ type: 'get-state' }, (response) => {
+        if (chrome.runtime.lastError) {
+            console.error(chrome.runtime.lastError.message);
+            // Handle the error, maybe show a message to the user
+        } else if (response) {
+            updateUI(response);
         }
-    }
+    });
 
-    /**
-     * Loads a specific track from the playlist into the audio player.
-     * @param {number} index - The index of the track in the playlist.
-     */
-    function loadTrack(index) {
-        if (index < 0 || index >= playlist.length) return;
-        
-        currentTrackIndex = index;
-        const file = playlist[index];
-        const fileURL = URL.createObjectURL(file);
-        audioPlayer.src = fileURL;
+    // Listen for state updates from the background script
+    chrome.runtime.onMessage.addListener((message) => {
+        // This listener is for broadcasts from the background, e.g., when a track changes
+        if (message.type === 'state-update') {
+            updateUI(message.data);
+        }
+    });
 
-        // Update UI with track information
-        trackTitleEl.textContent = file.name.replace(/\.[^/.]+$/, ""); // Remove file extension
-        trackTitleEl.title = file.name; // Show full name on hover
-        
-        updatePlaylistUI(); // To highlight the new track
-        playTrack(); // Automatically play the loaded track
-    }
-
-    /**
-     * Toggles between playing and pausing the current track.
-     */
-    function togglePlayPause() {
-        if (playlist.length === 0) return;
-
-        if (isPlaying) {
-            pauseTrack();
+    // --- UI Update Function ---
+    function updateUI(state) {
+        // Update playlist
+        playlistEl.innerHTML = '';
+        if (state.playlist.length === 0) {
+            playlistEl.innerHTML = '<li class="text-center text-gray-500 p-4">Add songs to get started!</li>';
         } else {
-            playTrack();
-        }
-    }
-    
-    /**
-     * Plays the current audio track.
-     */
-    function playTrack() {
-        if (playlist.length === 0) return;
-        const playPromise = audioPlayer.play();
-
-        if (playPromise !== undefined) {
-            playPromise.then(_ => {
-                isPlaying = true;
-                playPauseIcon.classList.remove('ph-play');
-                playPauseIcon.classList.add('ph-pause');
-            })
-            .catch(error => {
-                console.error("Playback failed:", error);
-                // Auto-play was prevented.
-                isPlaying = false;
-                 playPauseIcon.classList.remove('ph-pause');
-                playPauseIcon.classList.add('ph-play');
+            state.playlist.forEach((file, index) => {
+                const li = document.createElement('li');
+                li.textContent = file.name;
+                li.title = file.name;
+                li.className = 'p-3 cursor-pointer rounded-md hover:bg-gray-700 transition-colors truncate';
+                if (index === state.currentTrackIndex) {
+                    li.classList.add('playing');
+                }
+                li.addEventListener('click', () => sendMessage('play', index));
+                playlistEl.appendChild(li);
             });
         }
-    }
 
-    /**
-     * Pauses the current audio track.
-     */
-    function pauseTrack() {
-        audioPlayer.pause();
-        isPlaying = false;
-        playPauseIcon.classList.remove('ph-pause');
-        playPauseIcon.classList.add('ph-play');
-    }
-
-    /**
-     * Plays the next track in the playlist.
-     */
-    function playNext() {
-        if (playlist.length === 0) return;
-        currentTrackIndex = (currentTrackIndex + 1) % playlist.length;
-        loadTrack(currentTrackIndex);
-    }
-
-    /**
-     * Plays the previous track in the playlist.
-     */
-    function playPrevious() {
-        if (playlist.length === 0) return;
-        currentTrackIndex = (currentTrackIndex - 1 + playlist.length) % playlist.length;
-        loadTrack(currentTrackIndex);
-    }
-
-
-    // --- UI Update Functions ---
-
-    /**
-     * Renders the playlist in the UI.
-     * Highlights the currently playing track.
-     */
-    function updatePlaylistUI() {
-        playlistEl.innerHTML = ''; // Clear the list
-
-        if (playlist.length === 0) {
-            playlistEl.innerHTML = '<li class="text-center text-gray-500 p-4">Add songs to get started!</li>';
-            return;
+        // Update track info
+        if (state.playlist.length > 0) {
+            const currentTrack = state.playlist[state.currentTrackIndex];
+            trackTitleEl.textContent = currentTrack.name.replace(/\.[^/.]+$/, "");
+        } else {
+            trackTitleEl.textContent = "No song selected";
         }
 
-        playlist.forEach((file, index) => {
-            const li = document.createElement('li');
-            li.textContent = file.name;
-            li.title = file.name;
-            li.className = 'p-3 cursor-pointer rounded-md hover:bg-gray-700 transition-colors truncate';
-            
-            // Highlight the currently loaded track
-            if (index === currentTrackIndex) {
-                li.classList.add('playing');
-            }
-            
-            // Add click event to play the song
-            li.addEventListener('click', () => loadTrack(index));
-            
-            playlistEl.appendChild(li);
-        });
+        // Update play/pause button
+        if (state.isPlaying) {
+            playPauseIcon.classList.remove('ph-play');
+            playPauseIcon.classList.add('ph-pause');
+        } else {
+            playPauseIcon.classList.remove('ph-pause');
+            playPauseIcon.classList.add('ph-play');
+        }
+
+        // Update seek bar and time
+        seekBar.value = state.currentTime;
+        // We can't know the duration from here, so we'll just show current time
+        currentTimeEl.textContent = formatTime(state.currentTime);
+        totalDurationEl.textContent = "---"; // Duration is handled in the background
+
+        // Update volume
+        volumeBar.value = state.volume;
     }
 
-    /**
-     * Updates the seek bar and current time display as the song plays.
-     */
-    function updateProgress() {
-        if (isNaN(audioPlayer.duration)) return;
-        const progressPercent = (audioPlayer.currentTime / audioPlayer.duration) * 100;
-        seekBar.value = progressPercent;
-        currentTimeEl.textContent = formatTime(audioPlayer.currentTime);
-    }
-    
-    /**
-     * Updates the total duration display when a track is loaded.
-     */
-    function updateDuration() {
-         if (isNaN(audioPlayer.duration)) return;
-         totalDurationEl.textContent = formatTime(audioPlayer.duration);
+    // --- Event Handlers ---
+    function handleFileSelect() {
+        const files = Array.from(fileInput.files);
+        sendMessage('add-files', files);
     }
 
-    /**
-     * Handles user interaction with the seek bar.
-     */
+    function togglePlayPause() {
+        const icon = playPauseIcon;
+        if (icon.classList.contains('ph-play')) {
+            sendMessage('play');
+        } else {
+            sendMessage('pause');
+        }
+    }
+
     function handleSeek() {
-        if (isNaN(audioPlayer.duration)) return;
-        const seekTime = (seekBar.value / 100) * audioPlayer.duration;
-        audioPlayer.currentTime = seekTime;
+        sendMessage('seek', { time: parseFloat(seekBar.value) });
     }
 
-    /**
-     * Handles user interaction with the volume bar.
-     */
     function handleVolumeChange() {
-        audioPlayer.volume = volumeBar.value;
+        sendMessage('set-volume', { volume: parseFloat(volumeBar.value) });
     }
 
-
-    // --- Utility Functions ---
-
-    /**
-     * Formats time in seconds to a "minutes:seconds" string.
-     * @param {number} seconds - The time in seconds.
-     * @returns {string} The formatted time string (e.g., "3:21").
-     */
+    // --- Utility Function ---
     function formatTime(seconds) {
+        if (isNaN(seconds)) return "0:00";
         const minutes = Math.floor(seconds / 60);
         const secs = Math.floor(seconds % 60);
         return `${minutes}:${secs < 10 ? '0' : ''}${secs}`;

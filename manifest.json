@@ -1,8 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Pro Music Player",
-  "version": "2.0",
-  "description": "Play your local music files with a professional-looking player.",
+  "version": "3.0",
+  "description": "Play your local music files with a professional-looking player that works in the background.",
+  "permissions": [
+    "storage",
+    "offscreen"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_popup": "popup.html"
   }
