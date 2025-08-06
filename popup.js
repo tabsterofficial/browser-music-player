@@ -20,14 +20,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const shuffleBtn = document.getElementById('shuffleBtn');
     const repeatBtn = document.getElementById('repeatBtn');
     const repeatOneIndicator = document.getElementById('repeatOneIndicator');
-    const searchInput = document.getElementById('searchInput'); // New search input
+    const searchInput = document.getElementById('searchInput');
 
     // --- State Variable ---
     let playerState = {}; // Local cache of the player state
 
     // --- Functions to send messages to the background script ---
     function sendMessage(type, data, callback) {
-        chrome.runtime.sendMessage({ target: 'background', type, data }, (response) => {
+        chrome.runtime.sendMessage({ type, data }, (response) => {
             if (chrome.runtime.lastError) {
                 console.error("Message error:", chrome.runtime.lastError.message);
             } else if (callback) {
@@ -47,7 +47,7 @@ document.addEventListener('DOMContentLoaded', () => {
     shuffleBtn.addEventListener('click', () => sendMessage('toggle-shuffle'));
     repeatBtn.addEventListener('click', () => sendMessage('cycle-repeat'));
     closeModalBtn.addEventListener('click', () => errorModal.classList.add('hidden'));
-    searchInput.addEventListener('input', () => updateUI(playerState)); // Update UI on search
+    searchInput.addEventListener('input', () => updateUI(playerState));
 
     // --- Initialization ---
     sendMessage('get-state', null, (response) => {
@@ -69,7 +69,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const currentPlaylist = state.isShuffled ? state.shuffledPlaylist : state.playlist;
         const searchTerm = searchInput.value.toLowerCase();
         
-        // **FIX**: Get the actual currently playing track object
         const currentTrack = currentPlaylist && currentPlaylist[state.currentTrackIndex];
 
         playlistEl.innerHTML = '';
@@ -85,14 +84,19 @@ document.addEventListener('DOMContentLoaded', () => {
                     li.title = file.name;
                     li.className = 'p-3 cursor-pointer rounded-md hover:bg-gray-700 transition-colors truncate';
                     
-                    li.dataset.originalIndex = index;
+                    // Get the original index from the main playlist
+                    const originalIndex = state.playlist.findIndex(p => p.name === file.name);
+                    li.dataset.originalIndex = originalIndex;
 
-                    // **FIX**: Compare the file object with the current track object
                     if (currentTrack && file.name === currentTrack.name) {
                         li.classList.add('playing');
                     }
                     li.addEventListener('click', () => {
-                        sendMessage('play', parseInt(li.dataset.originalIndex, 10));
+                        // When clicking a song, we need to find its index in the *current* list
+                        const playIndex = state.isShuffled 
+                            ? state.shuffledPlaylist.findIndex(t => t.name === file.name)
+                            : originalIndex;
+                        sendMessage('play', playIndex);
                     });
                     playlistEl.appendChild(li);
                 }
@@ -154,11 +158,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function togglePlayPause() {
-        if (playPauseIcon.classList.contains('ph-play')) {
-            sendMessage('play');
-        } else {
-            sendMessage('pause');
-        }
+        if (!playerState.playlist || playerState.playlist.length === 0) return;
+        sendMessage(playerState.isPlaying ? 'pause' : 'play');
     }
 
     function handleSeek() {

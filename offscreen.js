@@ -4,9 +4,13 @@ console.log('Offscreen document loaded');
 
 // Listen for messages from the background script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    console.log('Offscreen received message:', message.type);
+    // **FIX**: Only listen for messages specifically targeted at the offscreen document.
+    if (message.target !== 'offscreen') {
+        return;
+    }
+    console.log('Offscreen received command:', message.command);
     
-    switch (message.type) {
+    switch (message.command) {
         case 'play':
             play(message.data);
             break;

@@ -96,14 +96,10 @@ function broadcastState() {
 
 // --- Message Handling ---
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    // **FIX**: This listener now accepts messages from the popup (which have no target)
-    // and messages specifically targeted at the background script. It ignores messages
-    // meant for the offscreen document.
     if (message.target === 'offscreen') {
         return;
     }
 
-    // Wrap in an async IIFE to handle promises correctly
     (async () => {
         try {
             switch (message.type) {
@@ -135,20 +131,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 
 // --- Playback Logic ---
-
 async function addFiles(files) {
     const wasPlaylistEmpty = playerState.playlist.length === 0;
     playerState.playlist.push(...files);
-    
+
     if (playerState.isShuffled) {
-        playerState.shuffledPlaylist.push(...files);
+        // Add new files to the shuffled playlist as well
+        const newShuffledFiles = [...files].sort(() => Math.random() - 0.5);
+        playerState.shuffledPlaylist.push(...newShuffledFiles);
     }
 
     await saveState(true);
+    broadcastState(); // Broadcast the full new state
+
+    // If the playlist was empty, start playing the first track
     if (wasPlaylistEmpty && playerState.playlist.length > 0) {
         await playTrack(0);
     }
-    broadcastState();
 }
 
 async function playTrack(index) {
